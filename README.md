@@ -1,0 +1,2 @@
+# ansible-basic
+Basic configuration
