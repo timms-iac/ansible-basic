@@ -1,0 +1,16 @@
+---
+# handlers file for basic
+- name: restart systemd-logind
+  service:
+    name: systemd-logind
+    state: restarted
+  become: true
+  when: ansible_facts['user_id'] != 'root'
+
+- name: restart systemd-logind
+  service:
+    name: systemd-logind
+    state: restarted
+  become: false
+  when: ansible_facts['user_id'] == 'root'
+

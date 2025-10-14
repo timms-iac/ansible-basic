@@ -1,0 +1,21 @@
+---
+    - name: "Create {{ item.fs }} Filesystem for {{ item.dev }}"
+      community.general.filesystem:
+        dev: "{{ item.dev }}"
+        fstype: "{{ item.fs }}"
+      become: "{{ ansible_facts['user_id'] != 'root' }}"
+
+    - name: Create mountpoint
+      ansible.builtin.file:
+        path: "{{ item.mount }}"
+        state: directory
+      become: "{{ ansible_facts['user_id'] != 'root' }}"
+
+    - name: "Mount {{ item.dev }} to {{ item.mount }}"
+      ansible.posix.mount:
+        fstype: "{{ item.fs }}"
+        src: "{{ item.dev }}"
+        path: "{{ item.mount }}"
+        state: mounted
+      become: "{{ ansible_facts['user_id'] != 'root' }}"
+

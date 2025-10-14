@@ -1,0 +1,17 @@
+---
+- name: Set a hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname_short }}.{{ basic_domain }}"
+  notify:
+    - restart systemd-logind
+
+- name: Add IP address of all hosts to all hosts
+  lineinfile:
+    dest: /etc/hosts
+    regexp: '.* {{ item }}$'
+    line: "{{ hostvars[item]['ansible_facts']['default_ipv4']['address'] | default(hostvars[item]['ansible_facts']['all_ipv4_addresses'][0]) }} {{ hostvars[item]['ansible_facts']['fqdn'] }} {{item}}"
+    state: present
+  when: hostvars[item]['ansible_facts']['default_ipv4']['address'] is defined or hostvars[item]['ansible_facts']['all_ipv4_addresses'][0] is defined
+  with_items: "{{ common_add_groups_to_hosts | map('extract',groups) | list}}"
+
+

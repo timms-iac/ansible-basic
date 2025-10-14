@@ -1,0 +1,18 @@
+---
+- name: Generate an OpenSSH host certificate with valid_from, valid_to and valid_at parameters
+  community.crypto.openssh_cert:
+    type: host
+    signing_key: "{{ item }}"
+    public_key: "{{ item }}.pub"
+    path: /etc/tls
+    valid_from: +0s
+    valid_to: +32w
+    valid_at: +2w
+    ignore_timestamps: true
+    principals:
+      - "{{ inventory_hostname_short }}.{{ basic_domain }}"
+      - "{{ inventory_hostname_short }}"
+  loop:
+    - /etc/ssh/ssh_host_ecdsa_key
+    - /etc/ssh/ssh_host_ed25519_key
+    - /etc/ssh/ssh_host_rsa_key

@@ -1,0 +1,282 @@
+---
+- name: Retrieve renewal information for a certificate
+  community.crypto.acme_certificate_renewal_info:
+    acme_directory: "{{ basic_acme_directory }}"
+    certificate_content: "{{ basic.data.tls_crt }}"
+    remaining_days: 10
+    treat_parsing_error_as_non_existing: true
+  delegate_to: localhost
+  when: basic.data.tls_crt is defined
+  register: cert_data
+
+- name: Create ACME signed certificates
+  delegate_to: localhost
+  when: basic.data.tls_crt is not defined or cert_data.should_renew
+    #  no_log: true
+  block:
+    - name: Generate an OpenSSL private key with elliptic curve cryptography (ECC, secp384r1)
+      block:
+        - community.crypto.openssl_privatekey_pipe:
+            content: "{{ basic_acme_key | default(basic.data.acme_key | default('')) }}"
+            type: ECC
+            curve: secp384r1
+          run_once: true
+          register: output
+
+        - ansible.builtin.set_fact:
+            basic: |
+              {% set mybasic = basic | default({ 'data': {} }) %}
+              {% set _ = mybasic.data.update({ 'acme_key': output.privatekey }) %}
+              {% set _ = mybasic.update({ 'changed': true }) %}
+              {{ mybasic }}
+          when: output is changed
+      always:
+        - ansible.builtin.set_fact:
+            output: ''
+
+    - name: Make sure account exists and has given contacts. We agree to TOS.
+      community.crypto.acme_account:
+        account_key_content: "{{ basic.data.acme_key }}"
+        state: present
+        terms_agreed: true
+        contact: "{{ basic_acme_contact }}"
+        acme_directory: "{{ basic_acme_directory }}"
+      run_once: true
+
+    - name: Generate an OpenSSL private key (4096 bits, ECC, secp384r1)
+      block:
+        - community.crypto.openssl_privatekey_pipe:
+            content: "{{ basic.data.tls_key | default('') }}"
+            type: "ECC"
+            curve: "secp384r1"
+          register: output
+
+        - ansible.builtin.set_fact:
+            basic: |
+              {% set mybasic = basic | default({ 'data': {} }) %}
+              {% set _ = mybasic.data.update({ 'tls_key': output.privatekey }) %}
+              {% set _ = mybasic.update({ 'changed': true }) %}
+              {{ mybasic }}
+          when: output is changed
+      always:
+        - ansible.builtin.set_fact:
+            output: ''
+
+    - name: Generate an OpenSSL Certificate Signing Request
+      block:
+        - community.crypto.openssl_csr_pipe:
+            privatekey_content: "{{ basic.data.tls_key }}"
+            content: "{{ basic.data.tls_csr | default('')}}"
+            common_name: "{{ inventory_hostname_short }}.{{ basic_domain }}"
+            subject_alt_name: |
+              {% set san = [] %}
+              {% for dns in [ansible_fqdn, ansible_nodename] %}
+              {% set tmp = "DNS:" + dns %}
+              {% set _ = san.append(tmp) %}
+              {% endfor %}
+              {{ san | unique }}
+          register: output
+
+        - name: Debug csr
+          ansible.builtin.debug:
+            var: output
+          tags:
+            - never
+            - basic_tls_acme
+
+        - ansible.builtin.set_fact:
+            basic: |
+              {% set mybasic = basic | default({ 'data': {} }) %}
+              {% set _ = mybasic.data.update({ 'tls_csr': output.csr }) %}
+              {% set _ = mybasic.update({ 'changed': true }) %}
+              {{ mybasic }}
+          when: output is changed
+      always:
+        - ansible.builtin.set_fact:
+            output: ''
+
+    - name: Create an ACME challenge
+      community.crypto.acme_certificate:
+        account_key_content: "{{ basic.data.acme_key }}"
+        csr_content: "{{ basic.data.tls_csr }}"
+        acme_directory: "{{ basic_acme_directory }}"
+        dest: "{{ basic_secrets_file | dirname }}/{{ inventory_hostname }}.crt" 
+        modify_account: false
+      register: challenge
+
+    - name: Debug challenge
+      ansible.builtin.debug:
+        var: challenge
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Get zones
+      ansible.builtin.uri:
+        url: "{{ basic_ionos_url }}"
+        method: GET
+        headers:
+          x-api-key: "{{ basic_ionos_public_prefix }}.{{ basic_ionos_secret }}"
+      register: zones
+      until: zones.status == 200
+      retries: 720 # 720 * 5 seconds = 1hour (60*60/5)
+      delay: 5 # Every 5 seconds
+
+    - name: Debug zones
+      ansible.builtin.debug:
+        var: zones.json
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Get zone id
+      ansible.builtin.set_fact:
+        zone_id: |
+          {% for zone in zones.json %}
+          {% if zone["name"] == basic_domain | community.dns.get_registrable_domain %}
+          {{ zone["id"] }}
+          {% endif -%}
+          {% endfor -%}
+
+    - name: Generate body
+      ansible.builtin.set_fact:
+        body: | 
+          {% set mybody = [] -%}
+          {% set record = challenge.challenge_data[inventory_hostname_short + '.' + basic_domain]['dns-01'] -%}
+          {% set _ = mybody.append({'name': record['record'], 'type': 'TXT', 'content': record['resource_value'], 'ttl': 60, 'prio': 0, 'disabled': false }) -%}
+          {{ mybody }}
+
+    - name: Create Records
+      ansible.builtin.uri:
+        url: "{{ basic_ionos_url }}/{{ zone_id|trim }}/records"
+        method: POST
+        body_format: json
+        body: "{{ body }}"
+        status_code: [201]
+        headers:
+            x-api-key: "{{ basic_ionos_public_prefix }}.{{ basic_ionos_secret }}"
+      register: records
+      until: records.status == 201
+      retries: 12 # 12 * 5 seconds = 60 seconds
+      delay: 5 # Every 5 seconds
+
+    - name: Return error
+      ansible.builtin.debug:
+        msg: records
+      when: records.status != 201
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Let the challenge be validated
+      community.crypto.acme_certificate_order_validate:
+        acme_directory: "{{ basic_acme_directory }}"
+        account_key_content: "{{ basic.data.acme_key }}"
+        order_uri: "{{ challenge.order_uri }}"
+        challenge: dns-01
+      register: output
+
+    - name: Return validation
+      ansible.builtin.debug:
+        var: output
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Obtain information on the order
+      community.crypto.acme_certificate_order_info:
+        acme_directory: "{{ basic_acme_directory }}"
+        account_key_content: "{{ basic.data.acme_key }}"
+        order_uri: "{{ challenge.order_uri }}"
+      register: order_info
+        #      until: order_info.status == "valid" or order_info.status == "invalid"
+        #      retries: 720 # 720 * 5 seconds = 1 hour
+        #      delay: 5 # Every 5 seconds
+
+    - name: Return order_info
+      ansible.builtin.debug:
+        var: order_info
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Retrieve the cert and intermediate certificate
+      community.crypto.acme_certificate_order_finalize:
+        acme_directory: "{{ basic_acme_directory }}"
+        account_key_content: "{{ basic.data.acme_key }}"
+        csr_content: "{{ basic.data.tls_csr }}"
+        order_uri: "{{ challenge.order_uri }}"
+      when: order_info.order.status == "ready"
+      register: output
+
+    - name: Return cert
+      ansible.builtin.debug:
+        var: output
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Created records
+      ansible.builtin.debug:
+        var: records
+      tags:
+        - never
+        - basic_tls_acme
+
+    - name: Delete Records
+      ansible.builtin.uri:
+        url: "{{ basic_ionos_url }}/{{ zone_id|trim }}/records/{{ records.json[0].id|trim }}"
+        method: DELETE
+        headers:
+            x-api-key: "{{ basic_ionos_public_prefix }}.{{ basic_ionos_secret }}"
+      register: records
+      until: records.status == 200
+      retries: 12 # 12 * 5 seconds = 60 seconds
+      delay: 5 # Every 5 seconds
+
+    - name: Deleted records
+      ansible.builtin.debug:
+        var: records
+      tags:
+        - never
+        - basic_tls_acme
+
+    - ansible.builtin.set_fact:
+        basic: |
+          {% set mybasic = basic | default({ 'data': {} }) %}
+          {% set _ = mybasic.data.update({ 'tls_crt': output.selected_chain.cert }) %}
+          {% set _ = mybasic.data.update({ 'tls_chain': output.selected_chain.chain }) %}
+          {% set _ = mybasic.data.update({ 'tls_full_chain': output.selected_chain.full_chain }) %}
+          {% set _ = mybasic.update({ 'changed': true }) %}
+          {{ mybasic }}
+      when: output is changed
+
+- name: Create /etc/tls
+  ansible.builtin.file:
+    path: /etc/tls
+    state: directory
+    mode: 0700
+    owner: root
+    group: root
+  become: true
+
+- name: Copy certificate from variable
+  ansible.builtin.copy:
+    content: "{{ item.src }}"
+    dest: "/etc/tls/{{ item.dest }}"
+    mode: 0640
+    owner: root
+    group: "{{ basic_tls_group }}"
+  loop:
+    - { src: "{{ basic.data.tls_crt }}", dest: "{{ inventory_hostname + '.crt' }}" }
+    - { src: "{{ basic.data.tls_key }}", dest: "{{ inventory_hostname + '.key' }}" }
+    - { src: "{{ basic.data.tls_chain }}", dest: "root.crt" }
+  when: basic.data.tls_crt is defined and basic.data.tls_key is defined and basic.data.tls_full_chain is defined
+  no_log: true
+  become: true
+
+- name: Create ansible_tls_crt and ansible_tls_chain
+  ansible.builtin.set_fact:
+    ansible_tls_crt: "{{ basic.data.tls_crt }}"
+    ansible_tls_chain: "{{ basic.data.tls_chain }}"
+    cacheable: true

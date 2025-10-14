@@ -1,0 +1,32 @@
+---
+basic_domain: "{{ ansible_domain }}"
+# defaults file for basic
+common_add_groups_to_hosts: [ 'all' ]
+# Set in host_vars with a specific seed 
+basic_root_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=64, seed=54321) }}"
+basic_ansible_user: ansible
+# Set in host_vars with a specific seed 
+basic_ansible_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=64, seed=1234) }}"
+basic_ansible_authorized_keys:
+  - key1
+  - key2
+basic_default_user: admin
+basic_default_authorized_keys:
+  - key1
+  - key2
+# secrets on ansible server
+basic_secrets_file: "{{ playbook_dir }}/.secrets/{{ inventory_hostname }}.sops.yaml"
+basic_tls_group: root
+# ACME
+# Define key in (encrypted) variables
+# basic_acme_key: xxx
+basic_acme_directory: https://acme-staging-v02.api.letsencrypt.org/directory
+# basic_acme_directory: https://acme-v02.api.letsencrypt.org/directory
+basic_acme_contact:
+  - "mailto:admin@{{ basic_domain }}"
+basic_ionos_public_prefix: 12243457895
+basic_ionos_secret: aBCDe123FGHij
+basic_ionos_url: https://api.hosting.ionos.com/dns/v1/zones
+# loop over dict: fs, dev, mount 
+basic_extra_fs: []
+basic_packages_extra: []

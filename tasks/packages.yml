@@ -1,0 +1,24 @@
+---
+- name: Install sudo, vim
+  ansible.builtin.package:
+    name: 
+      - sudo
+      - vim
+      - lldpd
+        #      - pcre # required by lldpd
+      - dmidecode
+      - python3-jmespath
+      - acl
+    state: present
+
+- name: Start LLDPd
+  ansible.builtin.service:
+    name: lldpd
+    state: started
+    enabled: true
+
+- name: Install extra packages
+  ansible.builtin.package:
+    name: "{{ basic_packages_extra }}"
+    state: present
+

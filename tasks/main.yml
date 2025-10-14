@@ -1,0 +1,84 @@
+---
+# tasks file for basic
+
+- name: "Include vars of {{ basic_secrets_file }}"
+  community.sops.load_vars:
+    file: "{{ basic_secrets_file }}"
+    name: basic
+  when: basic_secrets_file is file
+  tags:
+    - always
+
+- name: Set ansible_become_password
+  ansible.builtin.set_fact:
+    ansible_become_password: "{{ basic.data.ansible_password }}"
+  when: basic.data.ansible_password is defined
+  no_log: true
+  tags:
+    - always
+
+- name: Check if /usr/bin/rw exists - PiKVM
+  ansible.builtin.stat:
+    path: "/usr/bin/rw"
+  register: stat_rw
+
+- name: Mount filesystem Read Write (rw) - PiKVM
+  ansible.builtin.command:
+    cmd: "/usr/bin/rw"
+  become: "{{ ansible_facts['user_id'] != 'root' }}"
+  when: stat_rw.stat.exists
+
+- name: Set hostname, /etc/hosts
+  ansible.builtin.import_tasks: host.yml
+  become: "{{ ansible_facts['user_id'] != 'root' }}"
+
+- name: Install packages
+  ansible.builtin.import_tasks: packages.yml
+  become: "{{ ansible_facts['user_id'] != 'root' }}"
+
+- name: Set password
+  ansible.builtin.import_tasks: password.yml
+  become: "{{ ansible_facts['user_id'] != 'root' }}"
+
+- name: Set TLS certificates
+  ansible.builtin.import_tasks: tls_acme.yml
+  become: false
+  tags:
+    - basic_tls_acme
+
+      #- name: Manage OpenSSH certificates
+      #  ansible.builtin.import_tasks: ssh.yml
+      #  become: false
+      #  tags:
+      #    - basic_ssh
+
+
+- name: Create extra_fs
+  ansible.builtin.include_tasks: extra_fs.yml
+  loop: "{{ basic_extra_fs }}"
+
+- name: "Ensure directory for {{ basic_secrets_file }}  exists"
+  ansible.builtin.file:
+    path: "{{ basic_secrets_file | dirname }}"
+    state: directory
+  delegate_to: localhost
+  tags:
+    - always
+
+- name: Encrypt basic datastructure
+  community.sops.sops_encrypt:
+    path: "{{ basic_secrets_file }}"
+    content_yaml: |
+      {% set _ = basic.update({'changed': false }) %}
+      {{ basic }}
+  when: basic is changed
+  delegate_to: localhost
+  tags:
+    - always
+
+- name: Make sure that basic (which contains secrets) is overwritten
+  ansible.builtin.set_fact:
+    basic: {}
+    cacheable: true # ensure {} is also written to cache file!
+  tags:
+    - always
