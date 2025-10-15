@@ -65,6 +65,11 @@
   tags:
     - always
 
+- name: Install guest agent
+  ansible.builtin.import_tasks: qemu_guest_agent.yml
+  when: ansible_virtualization_role == 'guest' and 'kvm' in ansible_virtualization_tech_guest
+  become: "{{ ansible_facts['user_id'] != 'root' }}"
+
 - name: Encrypt basic datastructure
   community.sops.sops_encrypt:
     path: "{{ basic_secrets_file }}"
